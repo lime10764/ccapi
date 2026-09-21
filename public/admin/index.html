@@ -278,7 +278,7 @@ button{cursor:pointer;border:0}
         </div>
         <div class="switch">
           <div class="t"><b id="manualT">手动开启防护</b><span>手动开启后不会自动解除</span></div>
-          <button class="btn sm ghost" id="btnManual" onclick="manualAttack(true)">立即开启</button>
+          <button class="btn sm ghost" id="btnManual" onclick="manualToggle()">立即开启</button>
         </div>
         <div id="guardState" style="margin-top:14px"></div>
       </div>
@@ -310,6 +310,11 @@ button{cursor:pointer;border:0}
         <div class="field"><label>确认新密码</label><input class="input" id="newPw2" type="password" placeholder="再输一次"></div>
         <button class="btn" onclick="savePassword()">更新密码</button>
       </div>
+      <div class="card" style="margin-top:14px">
+        <h3>版本信息</h3>
+        <div class="hint">后台页面版本：<b id="uiVer">-</b>　后端接口版本：<b id="apiVer">检测中…</b><br>
+        两个版本必须一致；不一致说明 functions 没更新成功，请重新部署并强制刷新（清缓存/无痕窗口）。</div>
+      </div>
     </section>
   </main>
 </div>
@@ -320,6 +325,8 @@ button{cursor:pointer;border:0}
 const API = ''
 let TOKEN = localStorage.getItem('admin_token') || ''
 let SETTINGS = null
+let GUARD = null
+const UI_VERSION = '4.10'
 let timer = null
 
 const $ = s => document.querySelector(s)
@@ -350,6 +357,7 @@ async function doLogin(){
 function logout(){ TOKEN=''; localStorage.removeItem('admin_token'); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); clearInterval(timer) }
 async function enterApp(){
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden')
+  $('#uiVer').textContent=UI_VERSION
   await Promise.all([loadDash(), loadSettings()])
   tab('dash')
   clearInterval(timer); timer = setInterval(()=>{ if(currentTab==='dash')loadDash() }, 5000)
@@ -371,6 +379,7 @@ function tab(name){
 async function loadDash(){
   try{
     const d = await api('/api/admin/metrics')
+    const el=$('#apiVer'); if(el){ el.textContent=d.version||'旧版（请重新部署 functions）'; el.style.color=d.version===UI_VERSION?'#7ee2a8':'#fb7185' }
     const atk = d.state.attack
     $('#attackPill').className = 'pill'+(atk?' attack':'')
     $('#attackText').textContent = atk ? (d.state.manual?'防护中（手动）':'防护中（自动）') : '防护正常'
@@ -424,20 +433,21 @@ function escapeHtml(s){return String(s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&
 
 async function loadSettings(){
   SETTINGS = await api('/api/admin/settings')
-  const e=SETTINGS.email
-  mailProvider(e.provider, true)
+  const e=SETTINGS.email||{}
+  const sm=e.smtp||{}
+  mailProvider(e.provider||'dev', true)
   $('#r-fromName').value=e.fromName||'';$('#r-fromEmail').value=e.fromEmail||'';$('#r-key').value=e.resendKey||''
   $('#m-url').value=e.mailerUrl||'';$('#m-secret').value=e.mailerSecret||''
-  $('#s-name').value=e.smtp.senderName||'';$('#s-user').value=e.smtp.user||'';$('#s-host').value=e.smtp.host||''
-  $('#s-port').value=e.smtp.port||'465';$('#s-pass').value=e.smtp.pass||''
-  const t=SETTINGS.thresholds
-  $('#t-qps').value=t.globalPerSec;$('#t-ip').value=t.ipPer10s;$('#t-ua').value=t.uaPer10s
-  $('#t-lfr').value=t.loginFailRate;$('#t-lms').value=t.loginMinSamples
-  $('#t-cfr').value=t.challengeFailRate;$('#t-cms').value=t.challengeMinSamples;$('#t-cd').value=t.cooldownSec
+  $('#s-name').value=sm.senderName||'';$('#s-user').value=sm.user||'';$('#s-host').value=sm.host||''
+  $('#s-port').value=sm.port||'465';$('#s-pass').value=sm.pass||''
+  const t=SETTINGS.thresholds||{}
+  $('#t-qps').value=t.globalPerSec??20;$('#t-ip').value=t.ipPer10s??60;$('#t-ua').value=t.uaPer10s??120
+  $('#t-lfr').value=t.loginFailRate??0.5;$('#t-lms').value=t.loginMinSamples??10
+  $('#t-cfr').value=t.challengeFailRate??0.6;$('#t-cms').value=t.challengeMinSamples??10;$('#t-cd').value=t.cooldownSec??60
 }
 function mailProvider(p,silent){
   document.querySelectorAll('#mailSeg button').forEach(b=>b.classList.toggle('active',b.dataset.p===p))
-  ['dev','smtp','resend','mailer'].forEach(x=>$('#mp-'+x).classList.toggle('hidden',x!==p))
+  ['dev','smtp','resend','mailer'].forEach(x=>{const n=$('#mp-'+x);if(n)n.classList.toggle('hidden',x!==p)})
   if(!silent && SETTINGS){ SETTINGS.email.provider=p }
 }
 async function saveEmail(){
@@ -460,9 +470,11 @@ async function testEmail(){
 
 async function loadGuard(){
   const d=await api('/api/admin/metrics')
+  GUARD=d.state
   const st=d.state
-  $('#btnManual').textContent=st.attack&&st.manual?'解除防护':'立即开启'
-  $('#btnManual').className='btn sm '+(st.attack&&st.manual?'':'ghost')
+  const onNow=!!(st.attack&&st.manual)
+  $('#btnManual').textContent=onNow?'解除防护':'立即开启'
+  $('#btnManual').className='btn sm '+(onNow?'':'ghost')
   $('#guardState').innerHTML = st.attack
     ? `<div class="hint" style="border-color:rgba(251,113,133,.4);color:#ffc4cf">
        <b>防护进行中${st.manual?'（手动）':'（自动）'}</b><br>${(st.reasons||[]).join('；')||'异常流量'}
@@ -474,8 +486,13 @@ async function loadGuard(){
   const logs=d.logs.attack||[]
   $('#attackLog').innerHTML=logs.length?logs.map(l=>`<div class="logline attack"><time>${fmtTime(l.ts)}</time><span>${l.text}</span></div>`).join(''):'<div class="empty">暂无防护事件</div>'
 }
+function manualToggle(){
+  // 按当前真实状态决定开/关（修复按钮文字变了但 onclick 仍是“开启”的问题）
+  const onNow = !!(GUARD && GUARD.attack && GUARD.manual)
+  manualAttack(!onNow)
+}
 async function manualAttack(on){
-  try{ await api('/api/admin/attack',{method:'POST',body:JSON.stringify({on})}); toast(on?'防护已手动开启':'防护已解除'); loadGuard() }
+  try{ await api('/api/admin/attack',{method:'POST',body:JSON.stringify({on})}); toast(on?'防护已手动开启':'防护已解除'); await loadGuard() }
   catch(e){ toast(e.message,1) }
 }
 async function saveThresholds(){
