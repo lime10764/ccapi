@@ -467,7 +467,10 @@ async function loadGuard(){
     ? `<div class="hint" style="border-color:rgba(251,113,133,.4);color:#ffc4cf">
        <b>防护进行中${st.manual?'（手动）':'（自动）'}</b><br>${(st.reasons||[]).join('；')||'异常流量'}
        ${st.cooldownLeft?`<br>指标已回落，${st.cooldownLeft} 秒后自动解除`:''}</div>`
-    : '<div class="hint">当前流量正常，攻击模式未开启。自动检测始终运行。</div>'
+    : (st.muted
+      ? `<div class="hint" style="border-color:rgba(250,204,21,.4);color:#ffe58a">
+         <b>自动防护已暂停（手动解除后的冷静期）</b><br>${st.muteLeft} 秒后恢复自动检测，期间可随时点「立即开启」</div>`
+      : '<div class="hint">当前流量正常，攻击模式未开启。自动检测始终运行。</div>')
   const logs=d.logs.attack||[]
   $('#attackLog').innerHTML=logs.length?logs.map(l=>`<div class="logline attack"><time>${fmtTime(l.ts)}</time><span>${l.text}</span></div>`).join(''):'<div class="empty">暂无防护事件</div>'
 }
