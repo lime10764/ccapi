@@ -23,6 +23,7 @@
  */
 
 const KV_BINDING = 'MUSIC_KV'
+const VERSION = '4.10'
 const R2_BINDING = 'AVATAR_BUCKET'
 const CODE_TTL = 300          // 验证码 5 分钟
 const RESEND_COOLDOWN = 60    // 60 秒重发限制
@@ -459,7 +460,7 @@ async function handle(req, env, ctx) {
   }
 
   // ================= 健康检查 =================
-  if (method === 'GET' && p === '/api/ping') return json({ ok: true, ts: Date.now() })
+  if (method === 'GET' && p === '/api/ping') return json({ ok: true, v: VERSION, ts: Date.now() })
 
   // ================= 人机验证 =================
   if (method === 'GET' && p === '/api/challenge/request') {
@@ -654,6 +655,7 @@ async function handleAdmin(req, env, ctx, p, method) {
     const series = []
     for (let i = 29; i >= 0; i--) series.push(parseInt((await env[KV_BINDING].get(`m:g:${cur - i}`)) || '0', 10) || 0)
     return json({
+      version: VERSION,
       state: { attack: st.on, manual: st.manual, muted: st.muted, muteLeft: st.muteLeft, reasons: st.reasons, cooldownLeft: st.cooldownLeft },
       qps: { total: series.reduce((a, b) => a + b, 0), qps: st.metrics.qps, series },
       metrics: st.metrics,
