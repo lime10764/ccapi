@@ -33,7 +33,7 @@ const AVATAR_MAX = 200 * 1024
 const DEFAULT_SETTINGS = {
   adminPassword: 'admin123',
   email: {
-    provider: 'dev',          // dev | resend | mailer
+    provider: 'dev',          // dev | smtp（原生直连，推荐） | resend | mailer
     fromName: '乐库音乐',
     fromEmail: '',
     resendKey: '',
@@ -99,10 +99,106 @@ function codeEmail(code, ttlMin) {
   }
 }
 
+// Worker 原生 SMTP 发信（cloudflare:sockets，无需额外服务器）
+// 465 = 隐式 TLS；587/25 = STARTTLS。QQ smtp.qq.com:465、163 smtp.163.com:465
+async function sendViaSmtp(cfg, { to, subject, html, text }) {
+  const { connect } = await import('cloudflare:sockets')
+  const host = String(cfg.host || '').trim()
+  const port = Number(cfg.port) || 465
+  const user = String(cfg.user || '').trim()
+  const pass = String(cfg.pass || '')
+  if (!host || !user || !pass) throw new Error('SMTP 配置不完整（服务器/账号/授权码必填）')
+  const implicitTls = port === 465
+
+  let socket = connect(`${host}:${port}`, { secureTransport: implicitTls ? 'on' : 'off' })
+  const enc = new TextEncoder(), dec = new TextDecoder()
+  let reader = socket.readable.getReader(), writer = socket.writable.getWriter()
+  const reset = s => { reader = s.readable.getReader(); writer = s.writable.getWriter() }
+
+  const readReply = () => new Promise((resolve, reject) => {
+    let buf = ''
+    const timer = setTimeout(() => reject(new Error('SMTP 读取超时（' + host + '）')), 15000)
+    const pump = async () => {
+      try {
+        const { value, done } = await reader.read()
+        if (value) buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\r\n').filter(Boolean)
+        const last = lines[lines.length - 1]
+        if (last && /^\d{3}\s/.test(last)) { clearTimeout(timer); resolve(lines); return }
+        if (done) { clearTimeout(timer); reject(new Error('SMTP 连接被关闭：' + buf)); return }
+        pump()
+      } catch (e) { clearTimeout(timer); reject(e) }
+    }
+    pump()
+  })
+  const cmd = async (line, ok) => {
+    await writer.write(enc.encode(line + '\r\n'))
+    const lines = await readReply()
+    const code = Number(lines[lines.length - 1].slice(0, 3))
+    if (ok && !ok.includes(code)) throw new Error('SMTP 命令失败：' + lines.join(' / '))
+    return lines
+  }
+
+  try {
+    await readReply() // 220 问候
+    await cmd('EHLO leku-music', [250])
+    if (!implicitTls) {
+      await cmd('STARTTLS', [220])
+      socket = socket.startTls()
+      reset(socket)
+      await cmd('EHLO leku-music', [250])
+    }
+    await cmd('AUTH LOGIN', [334])
+    await cmd(btoa(user), [334])
+    await cmd(btoa(pass), [235])
+    await cmd(`MAIL FROM:<${user}>`, [250])
+    await cmd(`RCPT TO:<${to}>`, [250, 251])
+    await cmd('DATA', [354])
+
+    const b64utf8 = s => btoa(String.fromCharCode(...new TextEncoder().encode(s)))
+    const h = s => '=?UTF-8?B?' + b64utf8(s) + '?='
+    const body = [
+      `From: ${h(cfg.senderName || '乐库音乐')} <${user}>`,
+      `To: ${to}`,
+      `Subject: ${h(subject)}`,
+      'MIME-Version: 1.0',
+      'Date: ' + new Date().toUTCString(),
+      'Content-Type: multipart/alternative; boundary="lk-boundary"',
+      '',
+      '--lk-boundary',
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: base64', '',
+      b64utf8(text), '',
+      '--lk-boundary',
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: base64', '',
+      b64utf8(html),
+      '--lk-boundary--',
+      ''
+    ].join('\r\n')
+    await writer.write(enc.encode(body + '\r\n.\r\n'))
+    const lines = await readReply()
+    const code = Number(lines[lines.length - 1].slice(0, 3))
+    if (code !== 250) throw new Error('SMTP 投递失败：' + lines.join(' / '))
+    try { await cmd('QUIT', [221]) } catch (_) {}
+  } finally {
+    try { await writer.close() } catch (_) {}
+  }
+}
+
 async function sendEmail(env, to, code) {
   const s = await getSettings(env)
   const e = s.email
   const mail = codeEmail(code, Math.floor(CODE_TTL / 60))
+
+  // 原生 SMTP 直连（QQ/163 授权码，465 SSL，无需额外服务器）
+  if (e.provider === 'smtp' && e.smtp && e.smtp.host && e.smtp.user && e.smtp.pass) {
+    await sendViaSmtp(e.smtp, {
+      to, subject: mail.subject, html: mail.html,
+      text: `你的乐库音乐验证码是 ${code}，${CODE_TTL / 60} 分钟内有效，非本人操作请忽略。`
+    })
+    return { channel: 'smtp' }
+  }
 
   if (e.provider === 'resend' && e.resendKey && e.fromEmail) {
     const resp = await fetch('https://api.resend.com/emails', {
