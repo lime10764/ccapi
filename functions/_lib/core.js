@@ -315,19 +315,24 @@ async function evaluate(env, force = false) {
   const t = settings.thresholds
   const metrics = await collectMetrics(env)
   const breaches = breachesOf(metrics, t)
-  const st = Object.assign({ on: false, manual: false, reasons: [], since: 0, calmSince: 0 },
+  const st = Object.assign({ on: false, manual: false, reasons: [], since: 0, calmSince: 0, mutedUntil: 0 },
     JSON.parse((await env[KV_BINDING].get('attack')) || '{}'))
   let changed = false
+  const muted = !!st.mutedUntil && now < st.mutedUntil
   if (st.on && st.manual) { /* 人工开启只能人工解除 */ }
+  else if (muted) {
+    // 管理员刚手动解除：静默期内不允许自动重开，避免“关不掉”
+    if (st.on) Object.assign(st, { on: false, reasons: [], since: 0 }); changed = true
+  }
   else if (!st.on && breaches.length) {
-    Object.assign(st, { on: true, manual: false, reasons: breaches, since: now, calmSince: 0 }); changed = true
+    Object.assign(st, { on: true, manual: false, reasons: breaches, since: now, calmSince: 0, mutedUntil: 0 }); changed = true
     await pushLog(env, 'attack', '自动开启：' + breaches.join('；'))
   } else if (st.on && !st.manual) {
     if (breaches.length) { st.reasons = breaches; st.calmSince = 0 }
     else {
       if (!st.calmSince) st.calmSince = now
       if (now - st.calmSince >= t.cooldownSec * 1000) {
-        Object.assign(st, { on: false, reasons: [], since: 0, calmSince: 0 }); changed = true
+        Object.assign(st, { on: false, reasons: [], since: 0, calmSince: 0, mutedUntil: 0 }); changed = true
         await pushLog(env, 'attack', '流量恢复正常，自动解除防护')
       }
     }
@@ -335,6 +340,7 @@ async function evaluate(env, force = false) {
   if (changed) await env[KV_BINDING].put('attack', JSON.stringify(st))
   const out = {
     on: st.on, manual: st.manual, reasons: st.reasons, since: st.since,
+    muted, muteLeft: muted ? Math.ceil((st.mutedUntil - now) / 1000) : 0,
     cooldownLeft: st.on && st.calmSince ? Math.max(0, t.cooldownSec - Math.floor((now - st.calmSince) / 1000)) : 0,
     metrics
   }
@@ -344,10 +350,10 @@ async function evaluate(env, force = false) {
 async function setManual(env, on) {
   const now = Date.now()
   const st = on
-    ? { on: true, manual: true, reasons: ['管理员手动开启'], since: now, calmSince: 0 }
-    : { on: false, manual: false, reasons: [], since: 0, calmSince: 0 }
+    ? { on: true, manual: true, reasons: ['管理员手动开启'], since: now, calmSince: 0, mutedUntil: 0 }
+    : { on: false, manual: false, reasons: [], since: 0, calmSince: 0, mutedUntil: now + 10 * 60 * 1000 }
   await env[KV_BINDING].put('attack', JSON.stringify(st))
-  await pushLog(env, 'attack', on ? '管理员手动开启防护' : '管理员手动解除防护')
+  await pushLog(env, 'attack', on ? '管理员手动开启防护' : '管理员手动解除防护（10 分钟内不自动重开）')
   evalCache.at = 0
   return evaluate(env, true)
 }
@@ -648,7 +654,7 @@ async function handleAdmin(req, env, ctx, p, method) {
     const series = []
     for (let i = 29; i >= 0; i--) series.push(parseInt((await env[KV_BINDING].get(`m:g:${cur - i}`)) || '0', 10) || 0)
     return json({
-      state: { attack: st.on, manual: st.manual, reasons: st.reasons, cooldownLeft: st.cooldownLeft },
+      state: { attack: st.on, manual: st.manual, muted: st.muted, muteLeft: st.muteLeft, reasons: st.reasons, cooldownLeft: st.cooldownLeft },
       qps: { total: series.reduce((a, b) => a + b, 0), qps: st.metrics.qps, series },
       metrics: st.metrics,
       users: { total: parsed.length, today: parsed.filter(u => (u.lastLogin || 0) >= today.getTime()).length, disabled: parsed.filter(u => u.disabled).length },
@@ -659,7 +665,7 @@ async function handleAdmin(req, env, ctx, p, method) {
   if (p === '/api/admin/attack' && method === 'POST') {
     const b = await req.json().catch(() => ({}))
     const st = await setManual(env, !!b.on)
-    return json({ state: { attack: st.on, manual: st.manual, reasons: st.reasons, cooldownLeft: st.cooldownLeft } })
+    return json({ state: { attack: st.on, manual: st.manual, muted: st.muted, muteLeft: st.muteLeft, reasons: st.reasons, cooldownLeft: st.cooldownLeft } })
   }
 
   if (p === '/api/admin/settings' && method === 'GET') {
