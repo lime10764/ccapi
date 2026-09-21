@@ -224,30 +224,37 @@ button{cursor:pointer;border:0}
         <h3>发信通道</h3>
         <div class="seg" id="mailSeg">
           <button data-p="dev" class="active" onclick="mailProvider('dev')">开发模式</button>
+          <button data-p="smtp" onclick="mailProvider('smtp')">SMTP 直连（QQ/163）</button>
           <button data-p="resend" onclick="mailProvider('resend')">Resend</button>
-          <button data-p="mailer" onclick="mailProvider('mailer')">SMTP 邮件服务</button>
+          <button data-p="mailer" onclick="mailProvider('mailer')">自建邮件服务</button>
         </div>
 
         <div id="mp-dev" class="hint">开发模式下<b>不会真正发邮件</b>：验证码会显示在「概览」页，并打印到 Worker 日志（wrangler tail）。适合先联调登录流程。</div>
 
+        <div id="mp-smtp" class="hidden">
+          <div class="hint">推荐 QQ/163 邮箱：Worker 通过 <b>cloudflare:sockets</b> 直连 SMTP，<b>不需要额外服务器</b>。
+          去邮箱「设置 → 账户」开启 <b>SMTP/IMAP 服务</b>，生成<b>授权码</b>（不是登录密码）。常用：
+          QQ <code>smtp.qq.com:465</code>、163 <code>smtp.163.com:465</code>、Outlook <code>smtp.office365.com:587</code>。</div>
+          <div class="g2 grid">
+            <div class="field"><label>发件人名称</label><input class="input" id="s-name" placeholder="乐库音乐"></div>
+            <div class="field"><label>发件邮箱（SMTP 账号）</label><input class="input" id="s-user" placeholder="you@qq.com"></div>
+            <div class="field"><label>SMTP 服务器</label><input class="input" id="s-host" placeholder="smtp.qq.com"></div>
+            <div class="field"><label>端口（465 加密 / 587）</label><input class="input" id="s-port" placeholder="465"></div>
+          </div>
+          <div class="field"><label>SMTP 授权码（不是登录密码）</label><input class="input" id="s-pass" type="password" placeholder="授权码"></div>
+        </div>
+
         <div id="mp-resend" class="hidden">
-          <div class="hint">推荐：注册 <a href="https://resend.com" target="_blank">resend.com</a>（免费额度每月 3000 封），在 API Keys 页创建密钥；发件域名需在 Resend 验证，测试期可直接用官方 onboarding 发件地址。</div>
+          <div class="hint">注册 <a href="https://resend.com" target="_blank">resend.com</a>（免费额度每月 3000 封），在 API Keys 页创建密钥；发件域名需在 Resend 验证，测试期可直接用官方 onboarding 发件地址。</div>
           <div class="field"><label>发件人名称</label><input class="input" id="r-fromName" placeholder="乐库音乐"></div>
           <div class="field"><label>发件邮箱（已验证域名）</label><input class="input" id="r-fromEmail" placeholder="noreply@你的域名.com"></div>
           <div class="field"><label>Resend API Key</label><input class="input" id="r-key" placeholder="re_xxxxxxxx"></div>
         </div>
 
         <div id="mp-mailer" class="hidden">
-          <div class="hint">自建 Node 邮件服务（nodemailer），适合 QQ/163 等 SMTP 授权码。把 mailer 目录部署到任意服务器后填写地址；SMTP 账号由邮件服务每分钟来此拉取一次。</div>
+          <div class="hint">高级：自己部署 Node 邮件服务（nodemailer）。SMTP 账号在上方「SMTP 直连」里填写即可，邮件服务每分钟自动拉取；这里只填服务地址。</div>
           <div class="field"><label>邮件服务地址</label><input class="input" id="m-url" placeholder="https://mailer.你的域名.com"></div>
           <div class="field"><label>共享密钥（与邮件服务 INTERNAL_SECRET 一致）</label><input class="input" id="m-secret" placeholder="随机长字符串"></div>
-          <div class="g2 grid">
-            <div class="field"><label>SMTP 发件人名称</label><input class="input" id="s-name" placeholder="乐库音乐"></div>
-            <div class="field"><label>SMTP 用户名（邮箱）</label><input class="input" id="s-user" placeholder="you@qq.com"></div>
-            <div class="field"><label>SMTP 服务器</label><input class="input" id="s-host" placeholder="smtp.qq.com"></div>
-            <div class="field"><label>端口</label><input class="input" id="s-port" placeholder="465"></div>
-          </div>
-          <div class="field"><label>SMTP 授权码（不是登录密码）</label><input class="input" id="s-pass" type="password" placeholder="授权码"></div>
         </div>
 
         <button class="btn" onclick="saveEmail()">保存邮件配置</button>
@@ -430,7 +437,7 @@ async function loadSettings(){
 }
 function mailProvider(p,silent){
   document.querySelectorAll('#mailSeg button').forEach(b=>b.classList.toggle('active',b.dataset.p===p))
-  ['dev','resend','mailer'].forEach(x=>$('#mp-'+x).classList.toggle('hidden',x!==p))
+  ['dev','smtp','resend','mailer'].forEach(x=>$('#mp-'+x).classList.toggle('hidden',x!==p))
   if(!silent && SETTINGS){ SETTINGS.email.provider=p }
 }
 async function saveEmail(){
